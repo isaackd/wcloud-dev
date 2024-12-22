@@ -1,9 +1,9 @@
-use std::fs;
-use std::path::{PathBuf};
-use image::{GrayImage, Luma, RgbaImage, Rgba};
-use ab_glyph::{PxScale, Point, point, FontVec, Font, Glyph};
-use palette::{Pixel, Srgb, Hsl, IntoColor};
+use ab_glyph::{point, Font, FontVec, Glyph, Point, PxScale};
+use image::{GrayImage, Luma, Rgba, RgbaImage};
+use palette::{Hsl, IntoColor, Srgb};
+use std::path::PathBuf;
 use std::process::exit;
+use std::{collections::HashMap, fs};
 use woff2::decode::{convert_woff2_to_ttf, is_woff2};
 
 mod text;
@@ -12,8 +12,8 @@ pub mod sat;
 mod tokenizer;
 pub use tokenizer::{Tokenizer, DEFAULT_EXCLUDE_WORDS_TEXT};
 
-use nanorand::{Rng, WyRand};
 use crate::sat::{Rect, Region};
+use nanorand::{Rng, WyRand};
 
 #[cfg(feature = "visualize")]
 mod visualize;
@@ -87,18 +87,19 @@ impl WordCloud {
             let buffer = fs::read(path).unwrap();
             assert!(is_woff2(&buffer));
             convert_woff2_to_ttf(&mut std::io::Cursor::new(buffer)).expect("Invalid WOFF2 file")
-        }
-        else {
+        } else {
             fs::read(path).expect("Unable to read font file")
         };
 
-        self.font = FontVec::try_from_vec(font_file)
-            .expect("Font file may be invalid");
+        self.font = FontVec::try_from_vec(font_file).expect("Font file may be invalid");
 
         self
     }
     pub fn with_min_font_size(mut self, value: f32) -> Self {
-        assert!(value >= 0.0, "The minimum font size for a word cloud cannot be less than 0");
+        assert!(
+            value >= 0.0,
+            "The minimum font size for a word cloud cannot be less than 0"
+        );
         self.min_font_size = value;
         self
     }
@@ -119,7 +120,10 @@ impl WordCloud {
         self
     }
     pub fn with_relative_font_scaling(mut self, value: f32) -> Self {
-        assert!((0.0..=1.0).contains(&value), "Relative scaling must be between 0 and 1");
+        assert!(
+            (0.0..=1.0).contains(&value),
+            "Relative scaling must be between 0 and 1"
+        );
         self.relative_font_scaling = value;
         self
     }
@@ -137,7 +141,7 @@ impl WordCloud {
         word_positions: Vec<Word>,
         scale: f32,
         background_color: Rgba<u8>,
-        color_func: fn(&Word, &mut WyRand) -> Rgba<u8>
+        color_func: fn(&Word, &mut WyRand) -> Rgba<u8>,
     ) -> RgbaImage {
         // TODO: Refactor this so that we can fail earlier
         if !(0.0..=100.0).contains(&scale) {
@@ -146,7 +150,11 @@ impl WordCloud {
             exit(1);
         }
 
-        let mut final_image_buffer = RgbaImage::from_pixel((width as f32 * scale) as u32, (height as f32 * scale) as u32, background_color);
+        let mut final_image_buffer = RgbaImage::from_pixel(
+            (width as f32 * scale) as u32,
+            (height as f32 * scale) as u32,
+            background_color,
+        );
 
         for mut word in word_positions.into_iter() {
             let col = color_func(&word, rng);
@@ -161,7 +169,14 @@ impl WordCloud {
                 word.glyphs = text::text_to_glyphs(word.text, word.font, word.font_size);
             }
 
-            text::draw_glyphs_to_rgba_buffer(&mut final_image_buffer, word.glyphs, word.font, word.position, word.rotated, col);
+            text::draw_glyphs_to_rgba_buffer(
+                &mut final_image_buffer,
+                word.glyphs,
+                word.font,
+                word.position,
+                word.rotated,
+                col,
+            );
         }
 
         final_image_buffer
@@ -173,25 +188,33 @@ impl WordCloud {
         if next_font_size >= min_font_size && next_font_size > 0.0 {
             *font_size = next_font_size;
             true
-        }
-        else {
+        } else {
             false
         }
     }
 
     fn glyphs_height(&self, glyphs: &[Glyph]) -> u32 {
-        glyphs.iter().map(|g| {
-            let outlined = self.font.outline_glyph(g.clone())
-                .expect("Unable to outline glyph");
+        glyphs
+            .iter()
+            .map(|g| {
+                let outlined = self
+                    .font
+                    .outline_glyph(g.clone())
+                    .expect("Unable to outline glyph");
 
-            let bounds = outlined.px_bounds();
-            bounds.height() as u32
-        }).max().expect("No glyphs!")
+                let bounds = outlined.px_bounds();
+                bounds.height() as u32
+            })
+            .max()
+            .expect("No glyphs!")
     }
 
     fn text_dimensions_at_font_size(&self, text: &str, font_size: PxScale) -> Rect {
         let glyphs = text::text_to_glyphs(text, &self.font, font_size);
-        Rect { width: glyphs.width + self.word_margin, height: glyphs.height + self.word_margin }
+        Rect {
+            width: glyphs.width + self.word_margin,
+            height: glyphs.height + self.word_margin,
+        }
     }
 
     pub fn generate_from_text(&self, text: &str, size: WordCloudSize, scale: f32) -> RgbaImage {
@@ -203,10 +226,39 @@ impl WordCloud {
         text: &str,
         size: WordCloudSize,
         scale: f32,
-        color_func: fn(&Word, &mut WyRand) -> Rgba<u8>
+        color_func: fn(&Word, &mut WyRand) -> Rgba<u8>,
     ) -> RgbaImage {
         let words = self.tokenizer.get_normalized_word_frequencies(text);
+        self.generate_with_color_func(words, size, scale, color_func)
+    }
 
+    pub fn generate_from_map(
+        &self,
+        map: HashMap<&str, usize>,
+        size: WordCloudSize,
+        scale: f32,
+    ) -> RgbaImage {
+        self.generate_from_map_with_color_func(map, size, scale, random_color_rgba)
+    }
+
+    pub fn generate_from_map_with_color_func(
+        &self,
+        map: HashMap<&str, usize>,
+        size: WordCloudSize,
+        scale: f32,
+        color_func: fn(&Word, &mut WyRand) -> Rgba<u8>,
+    ) -> RgbaImage {
+        let words = self.tokenizer.get_normalized_word_frequencies_from_map(map);
+        self.generate_with_color_func(words, size, scale, color_func)
+    }
+
+    fn generate_with_color_func(
+        &self,
+        words: Vec<(&str, f32)>,
+        size: WordCloudSize,
+        scale: f32,
+        color_func: fn(&Word, &mut WyRand) -> Rgba<u8>,
+    ) -> RgbaImage {
         let (mut summed_area_table, mut gray_buffer) = match size {
             WordCloudSize::FromDimensions { width, height } => {
                 let buf = GrayImage::from_pixel(width, height, Luma([0]));
@@ -214,14 +266,12 @@ impl WordCloud {
 
                 u8_to_u32_vec(&buf, &mut summed_area_table);
                 (summed_area_table, buf)
-            },
+            }
             WordCloudSize::FromMask(image) => {
                 let mut table = vec![0; image.len()];
 
                 u8_to_u32_vec(&image, &mut table);
-                sat::to_summed_area_table(
-                    &mut table, image.width() as usize, 0
-                );
+                sat::to_summed_area_table(&mut table, image.width() as usize, 0);
                 (table, image)
             }
         };
@@ -230,8 +280,7 @@ impl WordCloud {
         {
             let mask = if matches!(WordCloudSize::FromMask, _size) {
                 Some(gray_buffer.to_vec())
-            }
-            else {
+            } else {
                 None
             };
 
@@ -241,7 +290,8 @@ impl WordCloud {
                 mask,
                 font: self.font.as_slice().to_vec(),
                 background_color: self.background_color.0,
-            })).unwrap();
+            }))
+            .unwrap();
             println!("{}", serialized);
         };
 
@@ -254,18 +304,18 @@ impl WordCloud {
             None => WyRand::new(),
         };
 
-        let first_word = words.first()
-            .expect("There are no words!");
+        let first_word = words.first().expect("There are no words!");
 
         let skip_list = create_mask_skip_list(&gray_buffer);
 
         let mut font_size = {
             let rect_at_image_height = self.text_dimensions_at_font_size(
                 first_word.0,
-                PxScale::from(gray_buffer.height() as f32 * 0.95)
+                PxScale::from(gray_buffer.height() as f32 * 0.95),
             );
 
-            let height_ratio = rect_at_image_height.height as f32 / rect_at_image_height.width as f32;
+            let height_ratio =
+                rect_at_image_height.height as f32 / rect_at_image_height.width as f32;
 
             let mut start_height = gray_buffer.width() as f32 * height_ratio;
 
@@ -277,15 +327,15 @@ impl WordCloud {
 
             if let Some(max) = self.max_font_size {
                 start_height.min(max)
-            }
-            else {
+            } else {
                 start_height
             }
         };
 
         'outer: for (word, freq) in &words {
             if !self.tokenizer.repeat && self.relative_font_scaling != 0.0 {
-                font_size *= self.relative_font_scaling * (freq / last_freq) + (1.0 - self.relative_font_scaling);
+                font_size *= self.relative_font_scaling * (freq / last_freq)
+                    + (1.0 - self.relative_font_scaling);
             }
 
             if font_size < self.min_font_size {
@@ -305,92 +355,123 @@ impl WordCloud {
                 let glyphs_height = self.glyphs_height(&glyphs.glyphs);
 
                 let rect = if !should_rotate {
-                    Rect { width: glyphs.width + self.word_margin, height: glyphs.height + self.word_margin }
-                }
-                else {
-                    Rect { width: glyphs.height + self.word_margin, height: glyphs.width + self.word_margin }
+                    Rect {
+                        width: glyphs.width + self.word_margin,
+                        height: glyphs.height + self.word_margin,
+                    }
+                } else {
+                    Rect {
+                        width: glyphs.height + self.word_margin,
+                        height: glyphs.width + self.word_margin,
+                    }
                 };
 
                 #[cfg(feature = "visualize")]
                 {
-                    let serialized = serde_json::to_string(&Message::ChangeWordMessage(visualize::Word {
-                        text: word.to_string(),
-                        font_size: font_size as u32,
-                        rect_width: rect.width,
-                        rect_height: rect.height,
-                        rotation: if should_rotate { 270 } else { 0 },
-                    })).unwrap();
+                    let serialized =
+                        serde_json::to_string(&Message::ChangeWordMessage(visualize::Word {
+                            text: word.to_string(),
+                            font_size: font_size as u32,
+                            rect_width: rect.width,
+                            rect_height: rect.height,
+                            rotation: if should_rotate { 270 } else { 0 },
+                        }))
+                        .unwrap();
                     println!("{}", serialized);
                 };
 
                 if rect.width > gray_buffer.width() || rect.height > gray_buffer.height() {
                     if Self::check_font_size(&mut font_size, self.font_step, self.min_font_size) {
                         continue;
-                    }
-                    else {
+                    } else {
                         break 'outer;
                     };
                 }
 
                 if has_mask {
-                    match sat::find_space_for_rect_masked(&summed_area_table, gray_buffer.width(), gray_buffer.height(), &skip_list, &rect, &mut rng) {
+                    match sat::find_space_for_rect_masked(
+                        &summed_area_table,
+                        gray_buffer.width(),
+                        gray_buffer.height(),
+                        &skip_list,
+                        &rect,
+                        &mut rng,
+                    ) {
                         Some(pos) => {
                             let half_margin = self.word_margin as f32 / 2.0;
                             let x = pos.x as f32 + half_margin;
                             let y = pos.y as f32 + half_margin;
 
-                            break point(x, y)
-                        },
+                            break point(x, y);
+                        }
                         None => {
-                            if !Self::check_font_size(&mut font_size, self.font_step, self.min_font_size) {
+                            if !Self::check_font_size(
+                                &mut font_size,
+                                self.font_step,
+                                self.min_font_size,
+                            ) {
                                 if !tried_rotate {
                                     should_rotate = true;
                                     tried_rotate = true;
                                     font_size = initial_font_size;
+                                } else {
+                                    break 'outer;
                                 }
-                                else {
+                            }
+                        }
+                    };
+                } else {
+                    match sat::find_space_for_rect(
+                        &summed_area_table,
+                        gray_buffer.width(),
+                        gray_buffer.height(),
+                        &rect,
+                        &mut rng,
+                    ) {
+                        Some(pos) => {
+                            let half_margin = self.word_margin as f32 / 2.0;
+                            let x = pos.x as f32 + half_margin;
+                            let y = pos.y as f32 + half_margin;
+
+                            break point(x, y);
+                        }
+                        None => {
+                            if !Self::check_font_size(
+                                &mut font_size,
+                                self.font_step,
+                                self.min_font_size,
+                            ) {
+                                if !tried_rotate {
+                                    should_rotate = true;
+                                    tried_rotate = true;
+                                    font_size = initial_font_size;
+                                } else {
                                     break 'outer;
                                 }
                             }
                         }
                     };
                 }
-                else {
-                    match sat::find_space_for_rect(&summed_area_table, gray_buffer.width(), gray_buffer.height(), &rect, &mut rng) {
-                        Some(pos) => {
-                            let half_margin = self.word_margin as f32 / 2.0;
-                            let x = pos.x as f32 + half_margin;
-                            let y = pos.y as f32 + half_margin;
-
-                            break point(x, y)
-                        },
-                        None => {
-                            if !Self::check_font_size(&mut font_size, self.font_step, self.min_font_size) {
-                                if !tried_rotate {
-                                    should_rotate = true;
-                                    tried_rotate = true;
-                                    font_size = initial_font_size;
-                                }
-                                else {
-                                    break 'outer;
-                                }
-                            }
-                        }
-                    };
-                }
-
             };
-            text::draw_glyphs_to_gray_buffer(&mut gray_buffer, glyphs.clone(), &self.font, pos, should_rotate);
+            text::draw_glyphs_to_gray_buffer(
+                &mut gray_buffer,
+                glyphs.clone(),
+                &self.font,
+                pos,
+                should_rotate,
+            );
 
             #[cfg(feature = "visualize")]
             {
-                let serialized = serde_json::to_string(&Message::PlacedWordMessage(visualize::PlaceWord {
-                    text: word.to_string(),
-                    font_size: font_size as u32,
-                    x: pos.x as u32,
-                    y: pos.y as u32,
-                    rotation: if should_rotate { 270 } else { 0 },
-                })).unwrap();
+                let serialized =
+                    serde_json::to_string(&Message::PlacedWordMessage(visualize::PlaceWord {
+                        text: word.to_string(),
+                        font_size: font_size as u32,
+                        x: pos.x as u32,
+                        y: pos.y as u32,
+                        rotation: if should_rotate { 270 } else { 0 },
+                    }))
+                    .unwrap();
                 println!("{}", serialized);
             };
 
@@ -402,19 +483,29 @@ impl WordCloud {
                 rotated: should_rotate,
                 position: pos,
                 frequency: *freq,
-                index: final_words.len()
+                index: final_words.len(),
             });
 
             // TODO: Do a partial sat like the Python implementation
             u8_to_u32_vec(&gray_buffer, &mut summed_area_table);
             let start_row = (pos.y - 1.0).min(0.0) as usize;
-            sat::to_summed_area_table(&mut summed_area_table, gray_buffer.width() as usize, start_row);
+            sat::to_summed_area_table(
+                &mut summed_area_table,
+                gray_buffer.width() as usize,
+                start_row,
+            );
 
             last_freq = *freq;
         }
 
         WordCloud::generate_from_word_positions(
-            &mut rng, gray_buffer.width(), gray_buffer.height(), final_words, scale, self.background_color, color_func
+            &mut rng,
+            gray_buffer.width(),
+            gray_buffer.height(),
+            final_words,
+            scale,
+            self.background_color,
+            color_func,
         )
     }
 }
@@ -428,8 +519,7 @@ fn random_color_rgba(_word: &Word, rng: &mut WyRand) -> Rgba<u8> {
     let col = Hsl::new(hue as f32, 1.0, 0.5);
     let rgb: Srgb = col.into_color();
 
-    let raw: [u8; 3] = rgb.into_format()
-        .into_raw();
+    let raw: [u8; 3] = rgb.into_format().into();
 
     Rgba([raw[0], raw[1], raw[2], 1])
 }
@@ -468,8 +558,7 @@ fn _find_image_bounds(img: &GrayImage) -> Region {
                 if last_pos.0 > max_x {
                     max_x = last_pos.0;
                 }
-            }
-            else if pos > max_x as usize {
+            } else if pos > max_x as usize {
                 max_x = pos as u32;
             }
         }
@@ -478,17 +567,26 @@ fn _find_image_bounds(img: &GrayImage) -> Region {
     let width = max_x - min_x;
     let height = max_y - min_y;
 
-    Region { x: min_x, y: min_y, width, height }
+    Region {
+        x: min_x,
+        y: min_y,
+        width,
+        height,
+    }
 }
 
 /// Finds the outline of a mask on the x axis
 ///
 /// Useful for skipping white pixels that can't be used when looking for a space to place a word
 fn create_mask_skip_list(img: &GrayImage) -> Vec<(usize, usize)> {
-    img.rows().map(|mut row| {
-        let furthest_left = row.rposition(|p| p == &Luma::from([0])).unwrap_or(img.width() as usize);
-        let furthest_right = row.position(|p| p == &Luma::from([0])).unwrap_or(0);
+    img.rows()
+        .map(|mut row| {
+            let furthest_left = row
+                .rposition(|p| p == &Luma::from([0]))
+                .unwrap_or(img.width() as usize);
+            let furthest_right = row.position(|p| p == &Luma::from([0])).unwrap_or(0);
 
-        (furthest_right, furthest_left)
-    }).collect()
+            (furthest_right, furthest_left)
+        })
+        .collect()
 }
